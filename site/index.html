@@ -38,7 +38,7 @@
         <button id="copy" type="button" class="secondary">Copy command</button>
       </div>
       <textarea id="command" readonly spellcheck="false" aria-label="Decrypted session command"></textarea>
-      <p class="hint">Paste into an interactive Bash or Zsh shell. The command contains a one-time session key; treat it as sensitive. It changes only the target application's service settings, stays in the foreground, and restores the previous settings when stopped with Ctrl+C.</p>
+      <p class="hint">Paste into an interactive Bash or Zsh shell. The command contains a one-time session key; treat it as sensitive. It changes only the target application's service settings, stays in the foreground, and restores the previous settings when stopped with Ctrl+C. If the default port is already in use, prefix it with <code>SESSION_PORT=&lt;port&gt;</code>.</p>
       <button id="clear" type="button" class="text-button">Clear command</button>
     </section>
 

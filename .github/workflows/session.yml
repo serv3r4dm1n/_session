@@ -59,15 +59,6 @@ jobs:
             echo "The page is static and is not redeployed for this run. This job is waiting for the passphrase."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Waiting for password: $LINK"
-          mkdir -p "$RUNNER_TEMP/session-link"
-          printf '%s\n' "$LINK" > "$RUNNER_TEMP/session-link/link.txt"
-
-      - name: Upload session link
-        uses: actions/upload-artifact@v4
-        with:
-          name: session-link
-          path: ${{ runner.temp }}/session-link/link.txt
-          retention-days: 1
 
       - name: Download cloudflared
         run: |
