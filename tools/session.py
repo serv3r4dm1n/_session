@@ -62,7 +62,8 @@ def topic_for(work_dir: Path) -> str:
 def publish(topic: str, payload: dict[str, Any], relay: str) -> str:
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     last_error: Exception | None = None
-    for attempt in range(3):
+    delays = (2, 5, 10, 20, 30)
+    for attempt, delay in enumerate(delays):
         request = urllib.request.Request(
             f"{relay}/{topic}",
             data=body,
@@ -72,16 +73,27 @@ def publish(topic: str, payload: dict[str, Any], relay: str) -> str:
         try:
             with urllib.request.urlopen(request, timeout=20) as response:
                 raw = response.read()
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", "replace").strip()[:200]
+            except Exception:
+                pass
+            last_error = SessionError(
+                f"relay returned HTTP {exc.code}" + (f": {detail}" if detail else "")
+            )
+            if exc.code not in (408, 425, 429) and exc.code < 500:
+                break
         except (urllib.error.URLError, OSError) as exc:
             last_error = exc
-            if attempt < 2:
-                time.sleep(2)
-            continue
-        try:
-            return str(json.loads(raw.decode("utf-8")).get("id", ""))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return ""
-    raise SessionError("could not publish to the relay") from last_error
+        else:
+            try:
+                return str(json.loads(raw.decode("utf-8")).get("id", ""))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return ""
+        if attempt + 1 < len(delays):
+            time.sleep(delay)
+    raise SessionError(f"could not publish to the relay: {last_error}") from last_error
 
 
 def status_best_effort(topic: str, payload: dict[str, Any], relay: str) -> None:
