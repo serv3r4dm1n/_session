@@ -1,0 +1,187 @@
+name: Secure session
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new session automatically stops the previous one.
+concurrency:
+  group: secure-session
+  cancel-in-progress: true
+
+jobs:
+  session:
+    # Only the repository owner may start a session, from the default branch.
+    if: github.actor == github.repository_owner && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Check sealed payload
+        run: |
+          set -euo pipefail
+          if [[ ! -s vault.bin || ! -s site/vault.json ]]; then
+            echo "Run the 'Seal repository' workflow once before starting a session." >&2
+            exit 1
+          fi
+
+      - name: Initialize waiting session
+        env:
+          WORK: ${{ runner.temp }}/secure-session
+          PAGES_URL_OVERRIDE: ${{ vars.PAGES_URL }}
+        run: |
+          set -euo pipefail
+          RELAY="$(python3 -c 'import json; print(json.load(open("site/config.json"))["relay"].rstrip("/"))')"
+          python3 -m tools.session --relay "$RELAY" init --work-dir "$WORK"
+          TOPIC="$(tr -d '\r\n' < "$WORK/topic")"
+          PUBLIC_URL="$(tr -d '\r\n' < "$WORK/public.url")"
+          owner="${GITHUB_REPOSITORY%%/*}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          if [[ -n "${PAGES_URL_OVERRIDE:-}" ]]; then
+            PAGES_URL="${PAGES_URL_OVERRIDE%/}/"
+          else
+            PAGES_URL="https://$(printf '%s' "$owner" | tr '[:upper:]' '[:lower:]').github.io/$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')/"
+          fi
+          LINK="${PAGES_URL}#s=${TOPIC}&k=${PUBLIC_URL}"
+          printf 'LINK=%s\n' "$LINK" >> "$GITHUB_ENV"
+          printf 'RELAY=%s\n' "$RELAY" >> "$GITHUB_ENV"
+          {
+            echo "## Waiting for password"
+            echo
+            echo "Open the session page and enter the passphrase:"
+            echo
+            echo "[Open secure session]($LINK)"
+            echo
+            echo "The page is static and is not redeployed for this run. This job is waiting for the passphrase."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Waiting for password: $LINK"
+
+      - name: Download cloudflared
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/secure-session"
+          mkdir -p "$WORK"
+          chmod 700 "$WORK"
+          curl --retry 3 --connect-timeout 10 --max-time 120 -fsSL \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o "$WORK/cloudflared"
+          chmod 700 "$WORK/cloudflared"
+
+      - name: Run session
+        timeout-minutes: 360
+        env:
+          WORK: ${{ runner.temp }}/secure-session
+        run: |
+          set -euo pipefail
+          RELAY="${RELAY:?}"
+          LINK="${LINK:?}"
+          SERVER_PID=""
+          CF_PID=""
+
+          cleanup() {
+            status=$?
+            trap - EXIT INT TERM
+            if [[ -n "$CF_PID" ]]; then
+              kill "$CF_PID" 2>/dev/null || true
+              wait "$CF_PID" 2>/dev/null || true
+            fi
+            if [[ -n "$SERVER_PID" ]]; then
+              kill "$SERVER_PID" 2>/dev/null || true
+              wait "$SERVER_PID" 2>/dev/null || true
+            fi
+            rm -f "$WORK/vault.key" "$WORK/remote-command.txt" 2>/dev/null || true
+            exit "$status"
+          }
+          trap cleanup EXIT INT TERM
+
+          python3 -m tools.session --relay "$RELAY" wait \
+            --work-dir "$WORK" --vault vault.bin --timeout 1800
+
+          python3 tools/vault.py open \
+            --vault vault.bin --key-file "$WORK/vault.key" --out "$WORK/client"
+          chmod 700 "$WORK/client"
+          python3 -m tools.session --relay "$RELAY" status \
+            --work-dir "$WORK" --state starting || true
+
+          TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+          echo "::add-mask::$TOKEN"
+          SESSION_TOKEN="$TOKEN" python3 "$WORK/client/tunnel.py" serve \
+            --port 18081 --path /session >"$WORK/server.log" 2>&1 &
+          SERVER_PID=$!
+          sleep 1
+          if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+            cat "$WORK/server.log" >&2
+            echo "The session service failed to start." >&2
+            exit 1
+          fi
+
+          "$WORK/cloudflared" tunnel --url http://127.0.0.1:18081 --no-autoupdate \
+            >"$WORK/cloudflared.log" 2>&1 &
+          CF_PID=$!
+
+          PUBLIC=""
+          for _ in $(seq 1 90); do
+            PUBLIC="$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' "$WORK/cloudflared.log" | head -n1 || true)"
+            [[ -n "$PUBLIC" ]] && break
+            if ! kill -0 "$CF_PID" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          if [[ -z "$PUBLIC" ]]; then
+            sed -E 's#https://[a-z0-9-]+\.trycloudflare\.com#https://<redacted>#g' "$WORK/cloudflared.log" | tail -n 50 >&2 || true
+            echo "The public relay did not become ready." >&2
+            exit 1
+          fi
+
+          WS="wss://${PUBLIC#https://}/session"
+          echo "::add-mask::$WS"
+          echo "::add-mask::$TOKEN"
+
+          RAW="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}"
+          KEY="$(tr -d '\r\n' < "$WORK/vault.key")"
+          export RAW WS TOKEN KEY
+          python3 - > "$WORK/remote-command.txt" <<'PY'
+          import os, shlex
+          raw = os.environ["RAW"]
+          ws = os.environ["WS"]
+          token = os.environ["TOKEN"]
+          key = os.environ["KEY"]
+          command = (
+              "( set +e; D=\"${TMPDIR:-/tmp}/.s.$(date +%s).$$\"; "
+              "umask 077; mkdir -p \"$D\" && chmod 700 \"$D\" && "
+              "curl --proto '=https' --tlsv1.2 -fsSL " + shlex.quote(raw + "/tools/vault.py") + " -o \"$D/v.py\" && "
+              "curl --proto '=https' --tlsv1.2 -fsSL " + shlex.quote(raw + "/vault.bin") + " -o \"$D/v.bin\" && "
+              "printf '%s\\n' " + shlex.quote(key) + " > \"$D/k\" && "
+              "python3 \"$D/v.py\" open --vault \"$D/v.bin\" --key-file \"$D/k\" --out \"$D\" && "
+              "rm -f \"$D/v.py\" \"$D/v.bin\" \"$D/k\" && touch \"$D/.ephemeral\" && "
+              "bash \"$D/client.sh\" " + shlex.quote(ws) + " " + shlex.quote(token) + "; "
+              "status=$?; rm -rf -- \"$D\"; exit \"$status\" )"
+          )
+          print(command)
+          PY
+
+          python3 -m tools.session --relay "$RELAY" publish-command \
+            --work-dir "$WORK" --command-file "$WORK/remote-command.txt"
+          rm -f "$WORK/remote-command.txt" "$WORK/vault.key"
+          unset KEY RAW WS TOKEN
+
+          {
+            echo "## Session ready"
+            echo
+            echo "Open the [secure session page]($LINK) and enter the passphrase to reveal the command."
+            echo
+            echo "Keep this workflow running while the session is active. Cancel it to stop."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Session ready. The encrypted command is published."
+
+          while kill -0 "$SERVER_PID" 2>/dev/null && kill -0 "$CF_PID" 2>/dev/null; do
+            sleep 10
+          done
+          echo "The session stopped unexpectedly." >&2
+          tail -n 30 "$WORK/server.log" "$WORK/cloudflared.log" >&2 || true
+          exit 1

@@ -1,0 +1,7 @@
+{
+  "format": "secure-session",
+  "version": 1,
+  "kdf": "PBKDF2-HMAC-SHA256",
+  "iterations": 600000,
+  "salt": "z+za6ewjYUZ2+dAGIlgJDw=="
+}

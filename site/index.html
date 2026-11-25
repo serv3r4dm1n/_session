@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https://ntfy.sh; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+  <title>Secure session</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="crypto.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <p class="eyebrow">SECURE SESSION</p>
+      <h1>Unlock the session</h1>
+      <p class="lede">Enter the session passphrase once. The command is decrypted locally in your browser; the passphrase is never sent to the relay.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="unlock-title">
+      <h2 id="unlock-title">Session passphrase</h2>
+      <form id="unlock-form">
+        <label for="password">Passphrase</label>
+        <div class="input-row">
+          <input id="password" name="password" type="password" autocomplete="current-password" spellcheck="false" required placeholder="Enter the session passphrase">
+          <button type="submit" id="unlock">Unlock</button>
+        </div>
+      </form>
+      <p id="status" class="status" role="status" aria-live="polite">Loading session…</p>
+      <p id="payload-state" class="small">Connecting to the waiting runner…</p>
+    </section>
+
+    <section id="command-panel" class="panel hidden" aria-labelledby="command-title">
+      <div class="panel-head">
+        <h2 id="command-title">Session command</h2>
+        <button id="copy" type="button" class="secondary">Copy command</button>
+      </div>
+      <textarea id="command" readonly spellcheck="false" aria-label="Decrypted session command"></textarea>
+      <p class="hint">Paste into an interactive Bash or Zsh shell. The command contains a one-time session key; treat it as sensitive. It changes only the target application's service settings, stays in the foreground, and restores the previous settings when stopped with Ctrl+C.</p>
+      <button id="clear" type="button" class="text-button">Clear command</button>
+    </section>
+
+    <section class="notes">
+      <h2>How it works</h2>
+      <ol>
+        <li>Start the <strong>Secure session</strong> workflow in GitHub Actions.</li>
+        <li>Open the session link from the workflow run summary.</li>
+        <li>Enter the passphrase and copy the decrypted command.</li>
+        <li>Run it on the remote machine and keep the workflow active while the session is in use.</li>
+      </ol>
+      <p>This page is static. It is not redeployed for each session; the browser and the waiting runner communicate through an encrypted relay channel.</p>
+      <p class="small">Cancel the workflow to end the session. Starting a new run replaces the previous session.</p>
+    </section>
+    <footer>End-to-end encrypted handoff · local decryption · no analytics</footer>
+  </main>
+</body>
+</html>
